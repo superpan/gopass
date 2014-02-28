@@ -3,18 +3,11 @@ package gopass
 
 // import bcrypt
 import (
-    //"code.google.com/p/go.crypto/bcrypt"
     "bytes"
     "crypto/rand"
-    //"crypto/subtle"
     "crypto/sha512"
-    //"encoding/base64"
     "errors"
-    //"fmt"
     "io"
-    //"math"
-    //"strconv"
-    //"strings"
 )
 
 // constants
@@ -132,7 +125,7 @@ func encrypt(password []byte, count uint, salt []byte) ([]byte, error) {
     return data[0:56], nil
 }
 
-// compare hash with password
+// TODO compare hash with password
 func Compare(hash string, password string) bool {
     return false
 }
