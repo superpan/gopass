@@ -1,3 +1,4 @@
+// Porting Drupal 7 phpass algorithm into go
 package gopass
 
 // import bcrypt
@@ -5,137 +6,135 @@ import (
     //"code.google.com/p/go.crypto/bcrypt"
     "bytes"
     "crypto/rand"
-    "crypto/subtle"
-    "encoding/base64"
+    //"crypto/subtle"
+    "crypto/sha512"
+    //"encoding/base64"
     "errors"
-    "fmt"
-    "math"
-    "strconv"
-    "strings"
+    //"fmt"
+    "io"
+    //"math"
+    //"strconv"
+    //"strings"
 )
 
-var (
-    InvalidSalt = errors.New("Invalid Salt")
-)
 // constants
 const (
-    HashCount = 15
-    MinHashCount = 7
-    MaxHashCount = 30
-    HashLength = 55
-    SaltLength = 12
+    DefaultHashCount    = 15
+    MinHashCount        =  7
+    MaxHashCount        = 30
+    HashLength          = 55
+    SaltLength          = 6
 )
 
-// Returns a string for mapping an int to the corresponding base 64 character.
-var enc = base64.NewEncoding("./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
-
-// generate salt
-func Salt(count int) (string, error) {
-    // maxing the count
-    hashCount := math.Max(float64(count), MinHashCount)
-    // salt length
-    saltSlice := make([]byte, SaltLength)
-    read, err := rand.Read(saltSlice)
-    if err != nil {
-        return "", err
-    }
-
-    // encrypt
-    saltBytes := bcryptString(uint(hashCount), saltSlice)
-    return string(saltBytes), nil
+// hashed struct
+type hashed struct {
+    hash    []byte
+    salt    []byte
+    count   int // allowed range is MinCount to MaxCount
 }
 
+// errors
+var InvalidCountError = errors.New("Invalid Count");
+var InvalidSaltError = errors.New("Invalid Salt");
+
 // hash password string
-func Hash(password string, salt string) (hash string, err error) {
+func Hash(password string, hashCount int) (hash string, err error) {
     var hashBytes []byte
 
     // convert both into bytes arrays
-    hashBytes, err = HashBytes([]byte(password), []byte(salt[0]))
+    hashBytes, err = HashBytes([]byte(password), hashCount)
 
     // convert hashBytes into string and return
     return string(hashBytes), err
 }
 
-// handle password hashing with byte arrays
-func HashBytes(password []byte, salt []byte) (hash []byte, err error) {
-    s := salt[0]
-    saltBuffer := bytes.NewBuffer(s)
-
-    // verify salt
-    if !byteCheck(saltBuffer, '$') || !byteCheck(saltBuffer, 'S' || !byteCheck(saltBuffer, '$')) {
-        return nil, InvalidSalt
-    }
-
-    // allocate more bytes
-    countBytes := make([]byte, 2)
-    read, err := saltBuffer.Read(countBytes)
-
-    if err != nil || read != 2 {
-        return nil, InvalidSalt
-    }
-
-    if !byteCheck(saltBuffer, '$') {
-        return nil, InvalidSalt
-    }
-
-    var count64 uint64
-    count64, err = strconv.ParseUint(string(countBytes), 10, 0)
-
-    if err != nil {
-        return nil, InvalidSalt
-    }
-
-    count := uint(count64)
-
-    saltBytes := make([]byte, 22)
-    read, err = saltBuffer.Read(saltBytes)
-    if err != nil || read != 22 {
-        return nil, InvalidSalt
-    }
-
-    var saltb []byte
-    // encoding/base64 expects 4 byte blocks padded, since bcrypt uses only 22 bytes we need to go up
-    saltb, err = enc.DecodeString(string(saltBytes) + "==")
+func HashBytes(password []byte, hashCount int) ([]byte, error) {
+    p, err := hashPassword(password, hashCount)
     if err != nil {
         return nil, err
     }
-
-    // cipher expects null terminated input (go initializes everything with zero values so this works)
-    passwordTerm := make([]byte, len(password)+1)
-    copy(passwordTerm, password)
-
-    hashed := crypt_raw(passwordTerm, saltb[:SaltLength], count)
-    return bcryptString(count, string(saltBytes), hashed[:len(bf_crypt_ciphertext)*4-1]), nil
+    return p.hash, nil
 }
 
-// compare hash with password
-func Compare(hash string, password string) bool {
+// internal function to hash password
+func hashPassword(password []byte, hashCount int) (*hashed, error) {
+    if hashCount < MinHashCount {
+        hashCount = DefaultHashCount
+    }
+    p := new(hashed)
+    p.count = hashCount
 
+    newSalt, err := generateSalt(hashCount)
+    if err != nil {
+        return nil, err
+    }
+    p.salt = newSalt
+
+    hash, err := encrypt(password, uint(p.count), p.salt)
+    if err != nil {
+        return nil, err
+    }
+    p.hash = hash
+    return p, err 
 }
 
-func bcryptString(hashCount uint, payload ...interface{}) []byte {
+// generate salt
+func generateSalt(hashCount int) ([]byte, error) {
     // new buffer
     rs := bytes.NewBuffer(make([]byte, 0, 61))
     // append $S$
     rs.WriteString("$S$")
+    // parse const
+    constBytes := []byte(alphabet)
+    rs.WriteByte(constBytes[hashCount])
 
-    if hashCount < 10 {
-        rs.WriteByte('0')
+    unencodedSalt := make([]byte, SaltLength)
+    _, err := io.ReadFull(rand.Reader, unencodedSalt)
+    if err != nil {
+        return nil, err
+    }
+    encodedSalt := base64Encode(unencodedSalt)
+
+    _, err = rs.Write(encodedSalt)
+    if err != nil {
+        return nil, err
     }
 
-    // format based 10
-    rs.WriteString(strconv.FormatUint(uint64(count), 10))
-    rs.WriteByte('$')
+    return rs.Bytes(), nil
+}
 
-    for _, p := range payload {
-        if pb, ok := p.([]byte); ok {
-            rs.WriteString(strings.TrimRight(enc.EncodeToString(pb), "="))
-        } else if ps, ok := p.(string); ok {
-            rs.WriteString(ps)
-        }
+func validateSalt(salt []byte) bool {
+    saltBuffer := bytes.NewBuffer(salt)
+    // verify salt
+    if !byteCheck(saltBuffer, '$') || !byteCheck(saltBuffer, 'S') || !byteCheck(saltBuffer, '$') {
+        return false
     }
 
-    return rs.Bytes()
+    return true
+}
+
+// password crypt
+func encrypt(password []byte, count uint, salt []byte) ([]byte, error) {
+    // make sure we only pull the first 12 characters
+    salt = salt[0:12]
+    if !validateSalt(salt) {
+        return nil, InvalidSaltError
+    }
+    data := append(salt, password...)
+    var i, rounds uint64
+    rounds = 1 << count
+    for i = 0; i < rounds; i++ {
+        checksum := sha512.Sum512(data)
+        // reinitialize data slice
+        data = checksum[0:64]
+    }
+
+    return data[0:56], nil
+}
+
+// compare hash with password
+func Compare(hash string, password string) bool {
+    return false
 }
 
 // check if a byte is next up on the read buffer 
